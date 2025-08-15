@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Test Jupyter API</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .container {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 100px;
+            font-family: monospace;
+        }
+
+        button {
+            background-color: #007cba;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #005a87;
+        }
+
+        .output {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 3px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            min-height: 50px;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Jupyter API Test Interface</h1>
+
+    <div class="container">
+        <h3>1. Test Connection</h3>
+        <button onclick="testConnection()">Test API Connection</button>
+        <div id="connection-status" class="status"></div>
+    </div>
+
+    <div class="container">
+        <h3>2. Start Kernel</h3>
+        <button onclick="startKernel()">Start Python Kernel</button>
+        <div id="kernel-status" class="status"></div>
+    </div>
+
+    <div class="container">
+        <h3>3. Execute Python Code</h3>
+        <textarea id="code-input" placeholder="print('Hello, World!')
+x = 5 + 3
+print(f'5 + 3 = {x}')">print('Hello, World!')
+x = 5 + 3
+print(f'5 + 3 = {x}')</textarea>
+        <br><br>
+        <button onclick="executeCode()">Run Code</button>
+        <div id="code-output" class="output">Output will appear here...</div>
+    </div>
+
+    <div class="container">
+        <h3>4. Create Notebook</h3>
+        <input type="text" id="notebook-name" placeholder="my_notebook.ipynb" value="test_notebook.ipynb">
+        <button onclick="createNotebook()">Create Notebook</button>
+        <div id="notebook-status" class="status"></div>
+    </div>
+
+    <div class="container">
+        <h3>5. List Files</h3>
+        <button onclick="listFiles()">List All Files</button>
+        <div id="files-list" class="output">Files will appear here...</div>
+    </div>
+
+    <script>
+        let currentKernel = null;
+        const baseURL = 'http://localhost:8888';
+
+        // Test API connection
+        async function testConnection() {
+            const statusDiv = document.getElementById('connection-status');
+            statusDiv.textContent = 'Testing connection...';
+            statusDiv.className = 'status info';
+
+            try {
+                const response = await fetch(`${baseURL}/api/contents`);
+                if (response.ok) {
+                    statusDiv.textContent = '✅ Connection successful! API is working.';
+                    statusDiv.className = 'status success';
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                statusDiv.textContent = `❌ Connection failed: ${error.message}. Make sure Docker container is running.`;
+                statusDiv.className = 'status error';
+            }
+        }
+
+        // Start a kernel
+        async function startKernel() {
+            const statusDiv = document.getElementById('kernel-status');
+            statusDiv.textContent = 'Starting kernel...';
+            statusDiv.className = 'status info';
+
+            try {
+                const response = await fetch(`${baseURL}/api/kernels`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: 'python3' })
+                });
+
+                if (response.ok) {
+                    currentKernel = await response.json();
+                    statusDiv.textContent = `✅ Kernel started! ID: ${currentKernel.id}`;
+                    statusDiv.className = 'status success';
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                statusDiv.textContent = `❌ Failed to start kernel: ${error.message}`;
+                statusDiv.className = 'status error';
+            }
+        }
+
+        // Execute code
+        async function executeCode() {
+            const outputDiv = document.getElementById('code-output');
+
+            if (!currentKernel) {
+                outputDiv.textContent = '❌ Please start a kernel first!';
+                return;
+            }
+
+            const code = document.getElementById('code-input').value;
+            outputDiv.textContent = 'Executing code...';
+
+            try {
+                // Create WebSocket connection
+                const ws = new WebSocket(`ws://localhost:8888/api/kernels/${currentKernel.id}/channels`);
+
+                ws.onopen = () => {
+                    const msg = {
+                        header: {
+                            msg_id: 'msg_' + Math.random().toString(36).substr(2, 9),
+                            username: 'user',
+                            session: 'session_' + Math.random().toString(36).substr(2, 9),
+                            msg_type: 'execute_request',
+                            version: '5.3'
+                        },
+                        parent_header: {},
+                        metadata: {},
+                        content: {
+                            code: code,
+                            silent: false,
+                            store_history: true,
+                            user_expressions: {},
+                            allow_stdin: false,
+                            stop_on_error: true
+                        }
+                    };
+                    ws.send(JSON.stringify(msg));
+                };
+
+                let output = '';
+                ws.onmessage = (event) => {
+                    const msg = JSON.parse(event.data);
+
+                    if (msg.msg_type === 'stream') {
+                        output += msg.content.text;
+                    } else if (msg.msg_type === 'execute_result') {
+                        if (msg.content.data['text/plain']) {
+                            output += msg.content.data['text/plain'] + '\n';
+                        }
+                    } else if (msg.msg_type === 'error') {
+                        output += `Error: ${msg.content.ename}: ${msg.content.evalue}\n`;
+                    } else if (msg.msg_type === 'execute_reply') {
+                        ws.close();
+                        outputDiv.textContent = output || 'Code executed successfully (no output)';
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    outputDiv.textContent = `❌ WebSocket error: ${error.message}`;
+                };
+
+            } catch (error) {
+                outputDiv.textContent = `❌ Execution error: ${error.message}`;
+            }
+        }
+
+        // Create notebook
+        async function createNotebook() {
+            const statusDiv = document.getElementById('notebook-status');
+            const name = document.getElementById('notebook-name').value;
+
+            statusDiv.textContent = 'Creating notebook...';
+            statusDiv.className = 'status info';
+
+            try {
+                const response = await fetch(`${baseURL}/api/contents/${name}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type: 'notebook',
+                        content: {
+                            cells: [],
+                            metadata: {},
+                            nbformat: 4,
+                            nbformat_minor: 4
+                        }
+                    })
+                });
+
+                if (response.ok) {
+                    statusDiv.textContent = `✅ Notebook '${name}' created successfully!`;
+                    statusDiv.className = 'status success';
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                statusDiv.textContent = `❌ Failed to create notebook: ${error.message}`;
+                statusDiv.className = 'status error';
+            }
+        }
+
+        // List files
+        async function listFiles() {
+            const outputDiv = document.getElementById('files-list');
+            outputDiv.textContent = 'Loading files...';
+
+            try {
+                const response = await fetch(`${baseURL}/api/contents`);
+                const data = await response.json();
+
+                if (response.ok) {
+                    let fileList = 'Files and folders:\n\n';
+                    data.content.forEach(item => {
+                        fileList += `${item.type}: ${item.name}\n`;
+                    });
+                    outputDiv.textContent = fileList || 'No files found.';
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                outputDiv.textContent = `❌ Failed to list files: ${error.message}`;
+            }
+        }
+
+        // Auto-test connection when page loads
+        window.onload = () => {
+            setTimeout(testConnection, 1000);
+        };
+    </script>
+</body>
+
+</html>
